@@ -23,9 +23,29 @@ def filter_rows(df):
     df["readmit_30d"] = (df["readmitted"] == "<30").astype(int)      # target: 1 = back within 30 days
     return df
 
+
+DROP_COLS = [
+    "encounter_id",              # just an ID
+    "weight",                    # 97% missing
+    "payer_code",                # 40% missing, not clinical
+    "readmitted",                # replaced by readmit_30d
+    "examide", "citoglipton",    # always "No", no information
+]
+CODE_COLS = ["admission_type_id", "discharge_disposition_id", "admission_source_id"]
+
+
+def clean_columns(df):
+    df = df.drop(columns=DROP_COLS)
+    df[CODE_COLS] = df[CODE_COLS].astype(str)                       # codes are labels, not numbers
+    df["race"] = df["race"].fillna("Unknown")
+    df["medical_specialty"] = df["medical_specialty"].fillna("Missing")
+    return df
+
+
 if __name__ == "__main__":
     df = load_raw()
     df = filter_rows(df)
+    df = clean_columns(df)
     print(df.shape)
     print(f"Patients: {df['patient_nbr'].nunique():,}")
     print(f"Readmit <30d rate: {df['readmit_30d'].mean():.1%}")
