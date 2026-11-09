@@ -6,6 +6,8 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import StratifiedGroupKFold, cross_validate
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from xgboost import XGBClassifier
+
 
 ROOT = Path(__file__).resolve().parents[1]
 PROCESSED_DIR = ROOT / "data" / "processed"
@@ -55,6 +57,16 @@ def make_logistic(num_cols, cat_cols):
                                    class_weight="balanced", max_iter=1000)),
     ])
 
+def make_xgboost(num_cols, cat_cols, pos_weight):
+    """Gradient-boosted trees; class imbalance handled with scale_pos_weight."""
+    return Pipeline([
+        ("prep", make_preprocessor(num_cols, cat_cols)),
+        ("clf", XGBClassifier(n_estimators=300, learning_rate=0.05, max_depth=4,
+                              subsample=0.8, colsample_bytree=0.8,
+                              scale_pos_weight=pos_weight, eval_metric="logloss",
+                              n_jobs=1, random_state=RANDOM_STATE)),
+    ])
+
 
 def evaluate_cv(model, X, y, groups):
     """5-fold patient-grouped CV on the training set only."""
@@ -76,5 +88,11 @@ if __name__ == "__main__":
 
     print("\nLogistic regression baseline (5-fold grouped CV on train):")
     results = evaluate_cv(make_logistic(num_cols, cat_cols), X, y, groups)
+    for metric, values in results.items():
+        print(f"  {metric:18s} mean={values.mean():.3f}  folds={values.round(3)}")
+
+    pos_weight = (y == 0).sum() / (y == 1).sum()
+    print(f"\nXGBoost (scale_pos_weight={pos_weight:.2f}, 5-fold grouped CV on train):")
+    results = evaluate_cv(make_xgboost(num_cols, cat_cols, pos_weight), X, y, groups)
     for metric, values in results.items():
         print(f"  {metric:18s} mean={values.mean():.3f}  folds={values.round(3)}")
