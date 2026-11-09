@@ -165,3 +165,10 @@ if __name__ == "__main__":
     gaps = table.groupby("attribute")[["FNR", "FPR"]].agg(lambda s: s.max() - s.min())
     print("\nLargest gap within each attribute (flag if > 0.10):")
     print(gaps.round(3))
+
+    lr_proba = get_oof_proba(make_logistic(num_cols, cat_cols), X, y, groups)
+    oof = pd.DataFrame({GROUP: groups, TARGET: y,
+                        "lr_proba": lr_proba, "xgb_proba": xgb_proba}
+                       ).join(add_fairness_groups(train))
+    oof.to_csv(PROCESSED_DIR / "oof_predictions.csv", index=False)
+    print(f"\nSaved out-of-fold predictions: {len(oof):,} rows")
