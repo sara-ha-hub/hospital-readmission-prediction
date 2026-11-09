@@ -99,6 +99,33 @@ def summarize_threshold(y, proba, threshold):
     return {"recall": tp / (tp + fn), "precision": tp / (tp + fp),
             "fpr": fp / (fp + tn), "flagged": pred.mean()}
 
+
+def add_fairness_groups(df):
+    """Audit groups: merge small race groups, band age midpoints into three ranges."""
+    return pd.DataFrame({
+        "race": df["race"].replace({"Asian": "Other", "Hispanic": "Other"}),
+        "gender": df["gender"],
+        "age_band": pd.cut(df["age"], bins=[0, 50, 70, 100], right=False,
+                           labels=["<50", "50-69", "70+"]),
+    })
+
+
+def fairness_table(y, pred, groups_df):
+    """FNR (= 1 - recall) and FPR for every level of every audit attribute."""
+    d = groups_df.assign(y=y.to_numpy(), pred=pred)
+    rows = []
+    for attr in groups_df.columns:
+        for level, g in d.groupby(attr, observed=True):
+            tp = ((g.y == 1) & (g.pred == 1)).sum()
+            fn = ((g.y == 1) & (g.pred == 0)).sum()
+            fp = ((g.y == 0) & (g.pred == 1)).sum()
+            tn = ((g.y == 0) & (g.pred == 0)).sum()
+            rows.append({"attribute": attr, "group": level, "n": len(g),
+                         "readmit_rate": g.y.mean(), "FNR": fn / (tp + fn),
+                         "FPR": fp / (fp + tn), "flagged": g.pred.mean()})
+    return pd.DataFrame(rows)
+
+
 if __name__ == "__main__":
     df = load_clean()
     train, test = split_train_test(df)
@@ -128,3 +155,13 @@ if __name__ == "__main__":
         s = summarize_threshold(y, xgb_proba, t)
         print(f"  {name:11s} t={t:.3f}  recall={s['recall']:.3f}  precision={s['precision']:.3f}"
               f"  FPR={s['fpr']:.3f}  flagged={s['flagged']:.1%}")
+
+    print(f"\nFairness audit (XGBoost, out-of-fold, threshold={THRESHOLD}):")
+    xgb_pred = (xgb_proba >= THRESHOLD).astype(int)
+    table = fairness_table(y, xgb_pred, add_fairness_groups(train))
+    print(table.round(3).to_string(index=False))
+    table.to_csv(ROOT / "reports" / "fairness_oof.csv", index=False)
+
+    gaps = table.groupby("attribute")[["FNR", "FPR"]].agg(lambda s: s.max() - s.min())
+    print("\nLargest gap within each attribute (flag if > 0.10):")
+    print(gaps.round(3))
