@@ -3,15 +3,17 @@ from pathlib import Path
 import pandas as pd
 from sklearn.compose import ColumnTransformer
 from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import StratifiedGroupKFold, cross_validate
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from xgboost import XGBClassifier
-
+from sklearn.model_selection import StratifiedGroupKFold, cross_validate, cross_val_predict
+from sklearn.metrics import precision_recall_curve, confusion_matrix
+import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 PROCESSED_DIR = ROOT / "data" / "processed"
 RANDOM_STATE = 42
+THRESHOLD = 0.5   # fixed on OOF predictions; with scale_pos_weight it implies FN cost ≈ 7.8× FP
 
 TARGET = "readmit_30d"
 GROUP = "patient_nbr"
@@ -76,6 +78,27 @@ def evaluate_cv(model, X, y, groups):
     return {m: scores[f"test_{m}"] for m in ["roc_auc", "average_precision", "recall"]}
 
 
+def get_oof_proba(model, X, y, groups):
+    """Out-of-fold probabilities: each row is scored by a model that never saw its patient."""
+    cv = StratifiedGroupKFold(n_splits=5, shuffle=True, random_state=RANDOM_STATE)
+    return cross_val_predict(model, X, y, groups=groups, cv=cv, n_jobs=-1,
+                             method="predict_proba")[:, 1]
+
+
+def tune_threshold(y, proba, beta=1):
+    """Threshold that maximizes F-beta on out-of-fold predictions (beta > 1 favors recall)."""
+    precision, recall, thresholds = precision_recall_curve(y, proba)
+    b2 = beta ** 2
+    f = (1 + b2) * precision * recall / (b2 * precision + recall + 1e-12)
+    return thresholds[np.argmax(f[:-1])]   # last PR point has no threshold
+
+
+def summarize_threshold(y, proba, threshold):
+    pred = (proba >= threshold).astype(int)
+    tn, fp, fn, tp = confusion_matrix(y, pred).ravel()
+    return {"recall": tp / (tp + fn), "precision": tp / (tp + fp),
+            "fpr": fp / (fp + tn), "flagged": pred.mean()}
+
 if __name__ == "__main__":
     df = load_clean()
     train, test = split_train_test(df)
@@ -96,3 +119,12 @@ if __name__ == "__main__":
     results = evaluate_cv(make_xgboost(num_cols, cat_cols, pos_weight), X, y, groups)
     for metric, values in results.items():
         print(f"  {metric:18s} mean={values.mean():.3f}  folds={values.round(3)}")
+
+    print("\nXGBoost threshold tuning (out-of-fold predictions on train):")
+    xgb_proba = get_oof_proba(make_xgboost(num_cols, cat_cols, pos_weight), X, y, groups)
+    best_t = tune_threshold(y, xgb_proba)
+    for name, t in [("default", 0.5), ("F1-optimal", best_t),
+                    ("F2-optimal", tune_threshold(y, xgb_proba, beta=2))]:
+        s = summarize_threshold(y, xgb_proba, t)
+        print(f"  {name:11s} t={t:.3f}  recall={s['recall']:.3f}  precision={s['precision']:.3f}"
+              f"  FPR={s['fpr']:.3f}  flagged={s['flagged']:.1%}")
